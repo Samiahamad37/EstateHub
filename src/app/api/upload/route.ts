@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { mkdir, writeFile } from "fs/promises";
+import { put } from "@vercel/blob";
 import path from "path";
 import crypto from "crypto";
 import { requireRole } from "@/lib/auth";
@@ -19,8 +20,10 @@ export async function POST(request: NextRequest) {
   const files = form.getAll("files").filter((f): f is File => f instanceof File);
   if (!files.length) return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
 
+  // Use Vercel Blob when configured (production); fall back to local disk for offline dev.
+  const useBlob = !!process.env.BLOB_READ_WRITE_TOKEN;
   const dir = path.join(process.cwd(), "public", "uploads");
-  await mkdir(dir, { recursive: true });
+  if (!useBlob) await mkdir(dir, { recursive: true });
 
   const urls: string[] = [];
   for (const file of files.slice(0, 12)) {
@@ -32,9 +35,15 @@ export async function POST(request: NextRequest) {
     }
     const ext = file.type === "video/mp4" ? "mp4" : file.type.split("/")[1]?.replace("jpeg", "jpg") ?? "jpg";
     const name = `${crypto.randomBytes(16).toString("hex")}.${ext}`;
-    const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFile(path.join(dir, name), buffer);
-    urls.push(`/uploads/${name}`);
+
+    if (useBlob) {
+      const blob = await put(name, file, { access: "public", contentType: file.type });
+      urls.push(blob.url);
+    } else {
+      const buffer = Buffer.from(await file.arrayBuffer());
+      await writeFile(path.join(dir, name), buffer);
+      urls.push(`/uploads/${name}`);
+    }
   }
 
   return NextResponse.json({ urls });
